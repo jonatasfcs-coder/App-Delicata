@@ -30,6 +30,9 @@ import {
   X,
   Eye,
   Lock,
+  User,
+  Clock,
+  Tag,
   MessageCircle,
   Mail,
   MoreHorizontal
@@ -99,7 +102,6 @@ export default function App() {
   const [showRestoreMenu, setShowRestoreMenu] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<number | null>(null);
-  const [selectedSaleId, setSelectedSaleId] = useState<number | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [exportPeriod, setExportPeriod] = useState<'MENSAL' | 'ANUAL'>('MENSAL');
@@ -109,6 +111,8 @@ export default function App() {
   const [showGDriveConfirm, setShowGDriveConfirm] = useState(false);
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [showReportPreview, setShowReportPreview] = useState(false);
+  const [showSaleDetail, setShowSaleDetail] = useState(false);
+  const [saleToView, setSaleToView] = useState<Sale | null>(null);
   const [reportPreviewData, setReportPreviewData] = useState<{
     headers: string[],
     rows: any[],
@@ -148,10 +152,6 @@ export default function App() {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
-
-  useEffect(() => {
-    setSelectedSaleId(null);
-  }, [currentView]);
 
   const connectGDrive = async () => {
     try {
@@ -248,6 +248,7 @@ export default function App() {
     const data = JSON.stringify(sales, null, 2);
     const now = new Date();
     const dateStr = format(now, 'dd/MM/yyyy HH:mm');
+    const fileName = `Backup Delicata - ${format(now, 'dd-MM-yyyy')}`;
     
     // Save to IndexedDB for weekly backup
     await db.backups.add({
@@ -258,14 +259,37 @@ export default function App() {
 
     if (!isAuto) {
       const blob = new Blob([data], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `delicata_backup_${format(now, 'yyyy-MM-dd_HHmm')}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      const file = new File([blob], `${fileName}.json`, { type: 'application/json' });
+
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: 'Backup Delicata',
+            text: 'Arquivo de backup do banco de dados Delicata.'
+          });
+        } catch (error) {
+          console.error("Erro ao compartilhar backup:", error);
+          // Fallback to download
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${fileName}.json`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${fileName}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
     }
 
     setLastBackupDate(dateStr);
@@ -402,7 +426,10 @@ export default function App() {
   const deleteSale = async (id?: number) => {
     if (id) {
       await db.sales.delete(id);
-      setSelectedSaleId(null);
+      if (saleToView?.id === id) {
+        setShowSaleDetail(false);
+        setSaleToView(null);
+      }
     }
   };
 
@@ -524,7 +551,11 @@ export default function App() {
       ? `Período: ${format(setMonth(new Date(), exportMonth), 'MMMM', { locale: ptBR })} ${exportYear}`
       : `Período: ${exportYear}`;
 
-    const fileName = `Relatorio_${exportPeriod}_${exportPeriod === 'MENSAL' ? exportMonth + 1 : ''}_${exportYear}`;
+    const typeText = exportPeriod === 'MENSAL' ? 'Mensal' : 'Anual';
+    const dateText = exportPeriod === 'MENSAL' 
+      ? format(setMonth(new Date(), exportMonth), 'MMMM yyyy', { locale: ptBR })
+      : exportYear;
+    const fileName = `Delicata - Relatório ${typeText} - ${dateText}`;
 
     if (exportFormat === 'PDF') {
       const doc = new jsPDF();
@@ -1161,11 +1192,11 @@ export default function App() {
                           initial={{ opacity: 0, x: -20 }}
                           animate={{ opacity: 1, x: 0 }}
                           key={sale.id}
-                          onClick={() => setSelectedSaleId(selectedSaleId === sale.id ? null : (sale.id || null))}
-                          className={cn(
-                            "bg-white rounded-2xl p-4 flex items-center gap-4 shadow-sm border transition-all cursor-pointer",
-                            selectedSaleId === sale.id ? "border-[#6B0D0D] ring-1 ring-[#6B0D0D]/10" : "border-black/5"
-                          )}
+                          onClick={() => {
+                            setSaleToView(sale);
+                            setShowSaleDetail(true);
+                          }}
+                          className="bg-white rounded-2xl p-4 flex items-center gap-4 shadow-sm border border-black/5 transition-all cursor-pointer"
                         >
                           <div className="w-12 h-12 rounded-xl bg-black/5 flex items-center justify-center shrink-0 relative">
                             {sale.paymentType === 'dinheiro' ? (
@@ -1198,23 +1229,6 @@ export default function App() {
                               {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </p>
                           </div>
-
-                          <AnimatePresence>
-                            {selectedSaleId === sale.id && (
-                              <motion.button 
-                                initial={{ opacity: 0, scale: 0.8 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                exit={{ opacity: 0, scale: 0.8 }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setShowDeleteConfirm(sale.id || null);
-                                }}
-                                className="p-2 text-red-600 bg-red-50 rounded-lg transition-all"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </motion.button>
-                            )}
-                          </AnimatePresence>
                         </motion.div>
                     ))
                   )}
@@ -1242,7 +1256,7 @@ export default function App() {
                         <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto">
                           <Trash2 className="w-8 h-8 text-[#6B0D0D]" />
                         </div>
-                        <h3 className="font-bold text-black text-lg">Deseja deletar esta venda?</h3>
+                        <h3 className="font-bold text-black text-lg">Deseja cancelar esta venda?</h3>
                       </div>
 
                       <div className="space-y-3">
@@ -1253,7 +1267,7 @@ export default function App() {
                           }}
                           className="w-full bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform"
                         >
-                          Sim, Deletar
+                          Sim, Cancelar
                         </button>
                         <button 
                           onClick={() => setShowDeleteConfirm(null)}
@@ -1279,10 +1293,6 @@ export default function App() {
                 <div>
                   <h2 className="text-xl font-bold tracking-tight text-[#6B0D0D]">Total de Vendas</h2>
                   <div className="h-1 w-12 bg-[#6B0D0D] rounded-full"></div>
-                </div>
-                <div className="flex items-center gap-1.5 bg-green-50 px-3 py-1.5 rounded-full border border-green-100">
-                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                  <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Geração Local e Offline</span>
                 </div>
               </div>
 
@@ -1420,7 +1430,11 @@ export default function App() {
                     customPeriodSales.map((sale) => (
                       <div
                         key={sale.id}
-                        className="bg-white rounded-2xl p-4 flex items-center gap-4 shadow-sm border border-black/5"
+                        onClick={() => {
+                          setSaleToView(sale);
+                          setShowSaleDetail(true);
+                        }}
+                        className="bg-white rounded-2xl p-4 flex items-center gap-4 shadow-sm border border-black/5 transition-all cursor-pointer active:scale-[0.98]"
                       >
                         <div className="w-10 h-10 rounded-xl bg-black/5 flex items-center justify-center shrink-0">
                           <span className="text-[10px] font-bold text-black/40">
@@ -1488,12 +1502,12 @@ export default function App() {
                       onClick={() => handleBackup()}
                       className="bg-[#6B0D0D] text-white text-[10px] font-bold uppercase tracking-widest px-4 py-2 rounded-xl shadow-md active:scale-95 transition-transform"
                     >
-                      Exportar JSON
+                      FAZER BACKUP
                     </button>
                   </div>
                   <p className="text-[10px] text-black/60 leading-relaxed">
                     O backup exportará todas as suas vendas registradas para um arquivo JSON. 
-                    O arquivo será salvo automaticamente na pasta <strong>Downloads</strong> do seu telefone.
+                    Ao clicar em <strong>FAZER BACKUP</strong>, você poderá escolher onde salvar o arquivo no seu telefone.
                   </p>
                   
                   {lastBackupDate && (
@@ -1869,6 +1883,139 @@ export default function App() {
                   >
                     <Download className="w-4 h-4" />
                     Baixar / Compartilhar ({exportFormat})
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Sale Detail Modal */}
+        <AnimatePresence>
+          {showSaleDetail && saleToView && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center px-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowSaleDetail(false)}
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="bg-white w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl relative z-10 flex flex-col max-h-[85vh]"
+              >
+                <div className="p-6 bg-[#6B0D0D] text-white flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center">
+                      <ShoppingBag className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold uppercase tracking-widest text-[10px] opacity-70">Detalhes da Venda</h3>
+                      <p className="text-sm font-bold truncate max-w-[180px]">{saleToView.customerName}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowSaleDetail(false)} className="p-2 bg-white/10 rounded-full">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-auto p-6 space-y-6">
+                  {/* Info Grid */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-black/40 uppercase tracking-wider">
+                        <Calendar className="w-3 h-3" />
+                        Data
+                      </div>
+                      <p className="text-xs font-bold text-black">
+                        {format(new Date(saleToView.timestamp), 'dd/MM/yyyy')}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-black/40 uppercase tracking-wider">
+                        <Clock className="w-3 h-3" />
+                        Hora
+                      </div>
+                      <p className="text-xs font-bold text-black">
+                        {format(new Date(saleToView.timestamp), 'HH:mm')}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-black/40 uppercase tracking-wider">
+                        <CreditCard className="w-3 h-3" />
+                        Pagamento
+                      </div>
+                      <p className="text-xs font-bold text-black">
+                        {PAYMENT_LABELS[saleToView.paymentType]}
+                        {saleToView.installments && saleToView.installments > 1 && ` (${saleToView.installments}x)`}
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-black/40 uppercase tracking-wider">
+                        <DollarSign className="w-3 h-3" />
+                        Total
+                      </div>
+                      <p className="text-lg font-bold text-[#6B0D0D]">
+                        R$ {saleToView.totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Items List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 pb-2 border-b border-black/5">
+                      <Package className="w-4 h-4 text-black/40" />
+                      <h4 className="text-[10px] font-bold uppercase tracking-widest text-black/40">Produtos</h4>
+                    </div>
+                    <div className="space-y-2">
+                      {saleToView.items.map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center bg-black/5 p-3 rounded-xl">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold text-black truncate">{item.product}</p>
+                            <p className="text-[10px] text-black/40 font-medium">
+                              {item.quantity}x R$ {item.unitPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                            </p>
+                          </div>
+                          <div className="text-right ml-2">
+                            <p className="text-xs font-bold text-black">
+                              R$ {item.subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {saleToView.discount && saleToView.discount > 0 && (
+                    <div className="flex justify-between items-center bg-green-50 p-3 rounded-xl border border-green-100">
+                      <div className="flex items-center gap-2">
+                        <Tag className="w-4 h-4 text-green-600" />
+                        <span className="text-[10px] font-bold text-green-700 uppercase">Desconto Aplicado</span>
+                      </div>
+                      <span className="text-xs font-bold text-green-700">- R$ {saleToView.discount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-6 bg-black/5 border-t border-black/5 flex gap-3">
+                  <button
+                    onClick={() => {
+                      setShowSaleDetail(false);
+                      setShowDeleteConfirm(saleToView.id || null);
+                    }}
+                    className="flex-1 bg-white text-red-600 py-4 rounded-2xl font-bold text-xs uppercase border border-red-100 active:scale-95 transition-transform flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Cancelar Venda
+                  </button>
+                  <button
+                    onClick={() => setShowSaleDetail(false)}
+                    className="flex-1 bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform"
+                  >
+                    Fechar
                   </button>
                 </div>
               </motion.div>
