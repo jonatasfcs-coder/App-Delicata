@@ -1,1 +1,51 @@
 @import "tailwindcss";
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    overflow-x: hidden;
+    height: 100%;
+  }
+
+  body {
+    @apply antialiased text-black bg-[#FDFCFB];
+    user-select: none;
+    -webkit-user-select: none;
+    overflow-x: hidden;
+    height: 100%;
+    position: fixed;
+    width: 100%;
+  }
+
+  /* Allow selection in inputs and textareas */
+  input, textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  #root {
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Custom Toast Animations */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out forwards;
+}
+
+.animate-fade-out {
+  animation: fade-out 0.3s ease-out forwards;
+}

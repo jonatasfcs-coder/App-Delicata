@@ -35,7 +35,10 @@ import {
   Tag,
   MessageCircle,
   Mail,
-  MoreHorizontal
+  MoreHorizontal,
+  CheckCircle,
+  AlertCircle,
+  Info
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { 
@@ -197,9 +200,9 @@ export default function App() {
     const fileName = `delicata_weekly_backup_${format(now, 'yyyy-MM-dd')}.json`;
     const success = await uploadToGDrive(fileName, content);
     if (success) {
-      alert('Backup semanal enviado com sucesso para o Google Drive!');
+      showToast('Backup semanal enviado com sucesso para o Google Drive!', 'success');
     } else {
-      alert('Erro ao enviar backup semanal para o Google Drive.');
+      showToast('Erro ao enviar backup semanal para o Google Drive.', 'error');
     }
   };
 
@@ -214,86 +217,111 @@ export default function App() {
     const fileName = `delicata_manual_backup_${format(now, 'yyyy-MM-dd_HHmm')}.json`;
     const success = await uploadToGDrive(fileName, data);
     if (success) {
-      alert('Backup manual enviado com sucesso para o Google Drive!');
+      showToast('Backup manual enviado com sucesso para o Google Drive!', 'success');
     } else {
-      alert('Erro ao enviar backup manual para o Google Drive.');
+      showToast('Erro ao enviar backup manual para o Google Drive.', 'error');
     }
   };
 
   const handleShareBackup = async (app?: string) => {
-    const data = JSON.stringify(sales, null, 2);
-    const now = new Date();
-    const fileName = `delicata_backup_${format(now, 'yyyy-MM-dd_HHmm')}.json`;
-    const file = new File([data], fileName, { type: 'application/json' });
+    setIsExporting(true);
+    try {
+      const data = JSON.stringify(sales, null, 2);
+      const now = new Date();
+      const fileName = `delicata_backup_${format(now, 'yyyy-MM-dd_HHmm')}.json`;
+      const blob = new Blob([data], { type: 'application/json' });
+      const file = new File([blob], fileName, { type: 'application/json' });
 
+      const success = await saveOrShareFile(file, blob, fileName);
+      if (success) {
+        showToast('Backup compartilhado com sucesso!', 'success');
+        setShowShareMenu(false);
+      } else {
+        showToast('Erro ao compartilhar backup.', 'error');
+      }
+    } catch (error) {
+      console.error("Share backup error:", error);
+      showToast('Erro ao processar compartilhamento.', 'error');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const saveOrShareFile = async (file: File, blob: Blob, fileName: string) => {
+    // Try sharing first (best for mobile)
     if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({
           files: [file],
-          title: 'Backup Delicata',
-          text: 'Segue o arquivo de backup do banco de dados Delicata.'
+          title: fileName,
         });
-        setShowShareMenu(false);
-      } catch (err) {
-        console.error('Erro ao compartilhar:', err);
+        return true;
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') return true; // User cancelled
+        console.error("Share failed, falling back to download:", error);
       }
-    } else {
-      // Fallback to direct download
-      handleBackup();
-      setShowShareMenu(false);
+    }
+
+    // Fallback to download
+    try {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+      return true;
+    } catch (error) {
+      console.error("Download failed:", error);
+      return false;
     }
   };
 
   const handleBackup = async (isAuto = false) => {
-    const data = JSON.stringify(sales, null, 2);
-    const now = new Date();
-    const dateStr = format(now, 'dd/MM/yyyy HH:mm');
-    const fileName = `Backup Delicata - ${format(now, 'dd-MM-yyyy')}`;
-    
-    // Save to IndexedDB for weekly backup
-    await db.backups.add({
-      date: format(now, 'yyyy-MM-dd'),
-      timestamp: now.getTime(),
-      content: data
-    });
+    if (!isAuto) setIsExporting(true);
+    try {
+      const data = JSON.stringify(sales, null, 2);
+      const now = new Date();
+      const dateStr = format(now, 'dd/MM/yyyy HH:mm');
+      const fileName = `Backup_Delicata_${format(now, 'dd-MM-yyyy')}`;
+      
+      // Save to IndexedDB for weekly backup
+      await db.backups.add({
+        date: format(now, 'yyyy-MM-dd'),
+        timestamp: now.getTime(),
+        content: data
+      });
 
-    if (!isAuto) {
-      const blob = new Blob([data], { type: 'application/json' });
-      const file = new File([blob], `${fileName}.json`, { type: 'application/json' });
+      if (!isAuto) {
+        const blob = new Blob([data], { type: 'application/json' });
+        const file = new File([blob], `${fileName}.json`, { type: 'application/json' });
 
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({
-            files: [file],
-            title: 'Backup Delicata',
-            text: 'Arquivo de backup do banco de dados Delicata.'
-          });
-        } catch (error) {
-          console.error("Erro ao compartilhar backup:", error);
-          // Fallback to download
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `${fileName}.json`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(url);
+        const success = await saveOrShareFile(file, blob, `${fileName}.json`);
+        if (success) {
+          showToast('Backup gerado com sucesso!', 'success');
+        } else {
+          showToast('Erro ao gerar backup.', 'error');
         }
-      } else {
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${fileName}.json`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
       }
-    }
 
-    setLastBackupDate(dateStr);
-    localStorage.setItem('delicata_last_backup', dateStr);
+      setLastBackupDate(dateStr);
+      localStorage.setItem('delicata_last_backup', dateStr);
+    } catch (error) {
+      console.error("Backup error:", error);
+      if (!isAuto) showToast('Erro ao processar backup.', 'error');
+    } finally {
+      if (!isAuto) setIsExporting(false);
+    }
   };
 
   // Auto Backup Effect
@@ -456,250 +484,249 @@ export default function App() {
         
         setShowRestoreConfirm(false);
         setShowRestoreMenu(false);
-        alert(`Banco de dados restaurado para a data escolhida: ${fileDate}`);
+        showToast(`Banco de dados restaurado para a data escolhida: ${fileDate}`, 'success');
       } catch (err) {
-        alert('Erro ao restaurar o banco de dados. Verifique o arquivo.');
+        showToast('Erro ao restaurar o banco de dados. Verifique o arquivo.', 'error');
       }
     };
     reader.readAsText(file);
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!sales) return;
-    const data: any[] = [];
-    const headers = exportPeriod === 'MENSAL' 
-      ? ["Data", "Dinheiro", "Pix", "Débito", "Crédito", "Total do Dia"]
-      : ["Mês", "Dinheiro", "Pix", "Débito", "Crédito", "Total Mensal"];
-    
-    let totalDinheiro = 0;
-    let totalPix = 0;
-    let totalDebito = 0;
-    let totalCredito = 0;
-    let totalGeral = 0;
+    setIsExporting(true);
+    showToast('Gerando relatório...', 'info');
 
-    if (exportPeriod === 'MENSAL') {
-      const date = setYear(setMonth(new Date(), exportMonth), exportYear);
-      const days = getDaysInMonth(date);
+    try {
+      const data: any[] = [];
+      const headers = exportPeriod === 'MENSAL' 
+        ? ["Data", "Dinheiro", "Pix", "Débito", "Crédito", "Total do Dia"]
+        : ["Mês", "Dinheiro", "Pix", "Débito", "Crédito", "Total Mensal"];
       
-      for (let i = 1; i <= days; i++) {
-        const currentDay = new Date(exportYear, exportMonth, i);
-        const daySales = sales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
+      let totalDinheiro = 0;
+      let totalPix = 0;
+      let totalDebito = 0;
+      let totalCredito = 0;
+      let totalGeral = 0;
+
+      if (exportPeriod === 'MENSAL') {
+        const date = setYear(setMonth(new Date(), exportMonth), exportYear);
+        const days = getDaysInMonth(date);
         
-        const dinheiro = daySales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
-        const pix = daySales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
-        const debito = daySales.filter(s => s.paymentType === 'debito').reduce((acc, s) => acc + s.totalValue, 0);
-        const credito = daySales.filter(s => s.paymentType === 'credito_vista' || s.paymentType === 'credito_parcelado').reduce((acc, s) => acc + s.totalValue, 0);
-        const total = dinheiro + pix + debito + credito;
+        for (let i = 1; i <= days; i++) {
+          const currentDay = new Date(exportYear, exportMonth, i);
+          const daySales = sales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
+          
+          const dinheiro = daySales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
+          const pix = daySales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
+          const debito = daySales.filter(s => s.paymentType === 'debito').reduce((acc, s) => acc + s.totalValue, 0);
+          const credito = daySales.filter(s => s.paymentType === 'credito_vista' || s.paymentType === 'credito_parcelado').reduce((acc, s) => acc + s.totalValue, 0);
+          const total = dinheiro + pix + debito + credito;
 
-        data.push([
-          format(currentDay, 'dd/MM/yyyy'),
-          dinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          pix.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          debito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          credito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
-        ]);
+          data.push([
+            format(currentDay, 'dd/MM/yyyy'),
+            dinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            pix.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            debito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            credito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
+          ]);
 
-        totalDinheiro += dinheiro;
-        totalPix += pix;
-        totalDebito += debito;
-        totalCredito += credito;
-        totalGeral += total;
-      }
-    } else {
-      // Annual
-      for (let i = 0; i < 12; i++) {
-        const currentMonth = new Date(exportYear, i, 1);
-        const monthStart = startOfMonth(currentMonth);
-        const monthEnd = endOfMonth(currentMonth);
-        const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
-        
-        const dinheiro = monthSales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
-        const pix = monthSales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
-        const debito = monthSales.filter(s => s.paymentType === 'debito').reduce((acc, s) => acc + s.totalValue, 0);
-        const credito = monthSales.filter(s => s.paymentType === 'credito_vista' || s.paymentType === 'credito_parcelado').reduce((acc, s) => acc + s.totalValue, 0);
-        const total = dinheiro + pix + debito + credito;
-
-        data.push([
-          format(currentMonth, 'MMMM', { locale: ptBR }),
-          dinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          pix.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          debito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          credito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-          total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
-        ]);
-
-        totalDinheiro += dinheiro;
-        totalPix += pix;
-        totalDebito += debito;
-        totalCredito += credito;
-        totalGeral += total;
-      }
-    }
-
-    // Add Totals Row
-    data.push([
-      exportPeriod === 'MENSAL' ? "TOTAIS" : "Total Geral",
-      totalDinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-      totalPix.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-      totalDebito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-      totalCredito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
-      totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
-    ]);
-
-    const periodText = exportPeriod === 'MENSAL' 
-      ? `Período: ${format(setMonth(new Date(), exportMonth), 'MMMM', { locale: ptBR })} ${exportYear}`
-      : `Período: ${exportYear}`;
-
-    const typeText = exportPeriod === 'MENSAL' ? 'Mensal' : 'Anual';
-    const dateText = exportPeriod === 'MENSAL' 
-      ? format(setMonth(new Date(), exportMonth), 'MMMM yyyy', { locale: ptBR })
-      : exportYear;
-    const fileName = `Delicata - Relatório ${typeText} - ${dateText}`;
-
-    if (exportFormat === 'PDF') {
-      const doc = new jsPDF();
-      
-      // Top accent line
-      doc.setFillColor(107, 13, 13);
-      doc.rect(0, 0, 210, 2, 'F');
-
-      // Header - Logo and Company Name
-      doc.setFillColor(107, 13, 13);
-      doc.circle(25, 20, 7, 'F');
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.text("D", 25, 21.5, { align: 'center' });
-
-      doc.setFontSize(22);
-      doc.setTextColor(107, 13, 13);
-      doc.text("Delicata", 35, 23);
-      
-      // Report Title and Period (Right aligned)
-      doc.setFontSize(14);
-      doc.setTextColor(0, 0, 0);
-      doc.setFont('helvetica', 'bold');
-      doc.text("Relatório de Vendas", 190, 20, { align: 'right' });
-      
-      doc.setFontSize(10);
-      doc.setTextColor(100, 100, 100);
-      doc.setFont('helvetica', 'normal');
-      doc.text(periodText, 190, 26, { align: 'right' });
-      
-      // Divider
-      doc.setDrawColor(230, 230, 230);
-      doc.line(20, 32, 190, 32);
-      
-      autoTable(doc, {
-        head: [headers],
-        body: data,
-        startY: 38,
-        theme: 'striped',
-        headStyles: { 
-          fillColor: [107, 13, 13],
-          textColor: [255, 255, 255],
-          fontSize: 10,
-          fontStyle: 'bold',
-          halign: 'center'
-        },
-        alternateRowStyles: {
-          fillColor: [252, 248, 248]
-        },
-        styles: { 
-          fontSize: 8,
-          cellPadding: 3,
-          valign: 'middle'
-        },
-        columnStyles: {
-          0: { fontStyle: 'bold', cellWidth: 30 },
-          1: { halign: 'right' },
-          2: { halign: 'right' },
-          3: { halign: 'right' },
-          4: { halign: 'right' },
-          5: { halign: 'right', fontStyle: 'bold', fillColor: [245, 240, 240] }
-        },
-        didParseCell: (data) => {
-          // Highlight total row
-          if (data.row.index === data.table.body.length - 1) {
-            data.cell.styles.fontStyle = 'bold';
-            data.cell.styles.fillColor = [107, 13, 13];
-            data.cell.styles.textColor = [255, 255, 255];
-          }
-        },
-        didDrawPage: (data) => {
-          // Footer
-          doc.setFontSize(8);
-          doc.setTextColor(150);
-          const pageStr = "Página " + doc.getNumberOfPages();
-          const dateStr = "Gerado em: " + format(new Date(), 'dd/MM/yyyy HH:mm');
-          doc.text(pageStr, 190, 285, { align: 'right' });
-          doc.text(dateStr, 20, 285);
+          totalDinheiro += dinheiro;
+          totalPix += pix;
+          totalDebito += debito;
+          totalCredito += credito;
+          totalGeral += total;
         }
-      });
-      
-      const pdfBlob = doc.output('blob');
-      const pdfFile = new File([pdfBlob], `${fileName}.pdf`, { type: 'application/pdf' });
-      
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
-        navigator.share({
-          files: [pdfFile],
-          title: 'Relatório de Vendas',
-          text: 'Segue o relatório de vendas exportado.'
-        }).catch(() => {
-          doc.save(`${fileName}.pdf`);
-        });
       } else {
-        doc.save(`${fileName}.pdf`);
+        // Annual
+        for (let i = 0; i < 12; i++) {
+          const currentMonth = new Date(exportYear, i, 1);
+          const monthStart = startOfMonth(currentMonth);
+          const monthEnd = endOfMonth(currentMonth);
+          const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
+          
+          const dinheiro = monthSales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
+          const pix = monthSales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
+          const debito = monthSales.filter(s => s.paymentType === 'debito').reduce((acc, s) => acc + s.totalValue, 0);
+          const credito = monthSales.filter(s => s.paymentType === 'credito_vista' || s.paymentType === 'credito_parcelado').reduce((acc, s) => acc + s.totalValue, 0);
+          const total = dinheiro + pix + debito + credito;
+
+          data.push([
+            format(currentMonth, 'MMMM', { locale: ptBR }),
+            dinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            pix.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            debito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            credito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+            total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
+          ]);
+
+          totalDinheiro += dinheiro;
+          totalPix += pix;
+          totalDebito += debito;
+          totalCredito += credito;
+          totalGeral += total;
+        }
       }
-    } else {
-      // Excel Export with similar structure
-      const titleRow = ["DELICATA"];
-      const subtitleRow = ["Relatório de Vendas"];
-      const periodRow = [periodText];
-      const emptyRow = [""];
-      
-      const ws = XLSX.utils.aoa_to_sheet([
-        titleRow,
-        subtitleRow,
-        periodRow,
-        emptyRow,
-        headers,
-        ...data
+
+      // Add Totals Row
+      data.push([
+        exportPeriod === 'MENSAL' ? "TOTAIS" : "Total Geral",
+        totalDinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+        totalPix.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+        totalDebito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+        totalCredito.toLocaleString('pt-BR', { minimumFractionDigits: 2 }),
+        totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
       ]);
 
-      // Adjust column widths
-      const wscols = [
-        { wch: 15 }, // Data/Mês
-        { wch: 12 }, // Dinheiro
-        { wch: 12 }, // Pix
-        { wch: 12 }, // Débito
-        { wch: 12 }, // Crédito
-        { wch: 15 }, // Total do Dia / Mensal
-      ];
-      ws['!cols'] = wscols;
+      const periodText = exportPeriod === 'MENSAL' 
+        ? `Período: ${format(setMonth(new Date(), exportMonth), 'MMMM', { locale: ptBR })} ${exportYear}`
+        : `Período: ${exportYear}`;
 
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Relatório");
-      
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      const excelBlob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const excelFile = new File([excelBlob], `${fileName}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const typeText = exportPeriod === 'MENSAL' ? 'Mensal' : 'Anual';
+      const dateText = exportPeriod === 'MENSAL' 
+        ? format(setMonth(new Date(), exportMonth), 'MMMM_yyyy', { locale: ptBR })
+        : exportYear;
+      const fileName = `Delicata_Relatorio_${typeText}_${dateText}`;
 
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [excelFile] })) {
-        navigator.share({
-          files: [excelFile],
-          title: 'Relatório de Vendas',
-          text: 'Segue o relatório de vendas exportado.'
-        }).catch(() => {
-          XLSX.writeFile(wb, `${fileName}.xlsx`);
+      if (exportFormat === 'PDF') {
+        const doc = new jsPDF();
+        
+        // Top accent line
+        doc.setFillColor(107, 13, 13);
+        doc.rect(0, 0, 210, 2, 'F');
+
+        // Header - Logo and Company Name
+        doc.setFillColor(107, 13, 13);
+        doc.circle(25, 20, 7, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(12);
+        doc.setFont('helvetica', 'bold');
+        doc.text("D", 25, 21.5, { align: 'center' });
+
+        doc.setFontSize(22);
+        doc.setTextColor(107, 13, 13);
+        doc.text("Delicata", 35, 23);
+        
+        // Report Title and Period (Right aligned)
+        doc.setFontSize(14);
+        doc.setTextColor(0, 0, 0);
+        doc.setFont('helvetica', 'bold');
+        doc.text("Relatório de Vendas", 190, 20, { align: 'right' });
+        
+        doc.setFontSize(10);
+        doc.setTextColor(100, 100, 100);
+        doc.setFont('helvetica', 'normal');
+        doc.text(periodText, 190, 26, { align: 'right' });
+        
+        // Divider
+        doc.setDrawColor(230, 230, 230);
+        doc.line(20, 32, 190, 32);
+        
+        autoTable(doc, {
+          head: [headers],
+          body: data,
+          startY: 38,
+          theme: 'striped',
+          headStyles: { 
+            fillColor: [107, 13, 13],
+            textColor: [255, 255, 255],
+            fontSize: 10,
+            fontStyle: 'bold',
+            halign: 'center'
+          },
+          alternateRowStyles: {
+            fillColor: [252, 248, 248]
+          },
+          styles: { 
+            fontSize: 8,
+            cellPadding: 3,
+            valign: 'middle'
+          },
+          columnStyles: {
+            0: { fontStyle: 'bold', cellWidth: 30 },
+            1: { halign: 'right' },
+            2: { halign: 'right' },
+            3: { halign: 'right' },
+            4: { halign: 'right' },
+            5: { halign: 'right', fontStyle: 'bold', fillColor: [245, 240, 240] }
+          },
+          didParseCell: (data) => {
+            // Highlight total row
+            if (data.row.index === data.table.body.length - 1) {
+              data.cell.styles.fontStyle = 'bold';
+              data.cell.styles.fillColor = [107, 13, 13];
+              data.cell.styles.textColor = [255, 255, 255];
+            }
+          },
+          didDrawPage: (data) => {
+            // Footer
+            doc.setFontSize(8);
+            doc.setTextColor(150);
+            const pageStr = "Página " + doc.getNumberOfPages();
+            const dateStr = "Gerado em: " + format(new Date(), 'dd/MM/yyyy HH:mm');
+            doc.text(pageStr, 190, 285, { align: 'right' });
+            doc.text(dateStr, 20, 285);
+          }
         });
+        
+        const pdfBlob = doc.output('blob');
+        const pdfFile = new File([pdfBlob], `${fileName}.pdf`, { type: 'application/pdf' });
+        
+        const success = await saveOrShareFile(pdfFile, pdfBlob, `${fileName}.pdf`);
+        if (success) {
+          showToast('Relatório PDF gerado!', 'success');
+        } else {
+          showToast('Erro ao gerar PDF.', 'error');
+        }
       } else {
-        XLSX.writeFile(wb, `${fileName}.xlsx`);
-      }
-    }
+        // Excel Export with similar structure
+        const titleRow = ["DELICATA"];
+        const subtitleRow = ["Relatório de Vendas"];
+        const periodRow = [periodText];
+        const emptyRow = [""];
+        
+        const ws = XLSX.utils.aoa_to_sheet([
+          titleRow,
+          subtitleRow,
+          periodRow,
+          emptyRow,
+          headers,
+          ...data
+        ]);
 
-    setShowExportOptions(false);
+        // Adjust column widths
+        const wscols = [
+          { wch: 15 }, // Data/Mês
+          { wch: 12 }, // Dinheiro
+          { wch: 12 }, // Pix
+          { wch: 12 }, // Débito
+          { wch: 12 }, // Crédito
+          { wch: 15 }, // Total do Dia / Mensal
+        ];
+        ws['!cols'] = wscols;
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Relatório");
+        
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const excelBlob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const excelFile = new File([excelBlob], `${fileName}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+        const success = await saveOrShareFile(excelFile, excelBlob, `${fileName}.xlsx`);
+        if (success) {
+          showToast('Relatório Excel gerado!', 'success');
+        } else {
+          showToast('Erro ao gerar Excel.', 'error');
+        }
+      }
+    } catch (error) {
+      console.error("Export error:", error);
+      showToast('Erro ao exportar relatório.', 'error');
+    } finally {
+      setIsExporting(false);
+      setShowExportOptions(false);
+    }
   };
 
   const generateReportData = () => {
@@ -1500,9 +1527,10 @@ export default function App() {
                     </div>
                     <button 
                       onClick={() => handleBackup()}
-                      className="bg-[#6B0D0D] text-white text-[10px] font-bold uppercase tracking-widest px-4 py-2 rounded-xl shadow-md active:scale-95 transition-transform"
+                      disabled={isExporting}
+                      className="bg-[#6B0D0D] text-white text-[10px] font-bold uppercase tracking-widest px-4 py-2 rounded-xl shadow-md active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100"
                     >
-                      FAZER BACKUP
+                      {isExporting ? 'PROCESSANDO...' : 'FAZER BACKUP'}
                     </button>
                   </div>
                   <p className="text-[10px] text-black/60 leading-relaxed">
@@ -1795,10 +1823,15 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleExport}
-                    className="flex-1 bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
+                    disabled={isExporting}
+                    className="flex-1 bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2 disabled:opacity-50 disabled:scale-100"
                   >
-                    <Download className="w-4 h-4" />
-                    Exportar
+                    {isExporting ? (
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                    {isExporting ? 'Exportando...' : 'Exportar'}
                   </button>
                 </div>
               </motion.div>
@@ -1890,7 +1923,26 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Sale Detail Modal */}
+        {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-full shadow-lg flex items-center gap-2 whitespace-nowrap ${
+              toast.type === 'success' ? 'bg-green-600 text-white' :
+              toast.type === 'error' ? 'bg-red-600 text-white' :
+              'bg-[#6B0D0D] text-white'
+            }`}
+          >
+            {toast.type === 'success' && <CheckCircle className="w-5 h-5" />}
+            {toast.type === 'error' && <AlertCircle className="w-5 h-5" />}
+            {toast.type === 'info' && <Info className="w-5 h-5" />}
+            <span className="text-sm font-medium">{toast.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
         <AnimatePresence>
           {showSaleDetail && saleToView && (
             <div className="fixed inset-0 z-[80] flex items-center justify-center px-6">
@@ -2105,7 +2157,8 @@ export default function App() {
                       setShowShareMenu(false);
                       handleManualGDriveBackup();
                     }}
-                    className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                    disabled={isExporting}
+                    className="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100"
                   >
                     <Share2 className="w-4 h-4" />
                     Google Drive
@@ -2113,7 +2166,8 @@ export default function App() {
                   
                   <button 
                     onClick={() => handleShareBackup()}
-                    className="w-full bg-[#25D366] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                    disabled={isExporting}
+                    className="w-full bg-[#25D366] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100"
                   >
                     <MessageCircle className="w-4 h-4" />
                     WhatsApp
@@ -2121,7 +2175,8 @@ export default function App() {
 
                   <button 
                     onClick={() => handleShareBackup()}
-                    className="w-full bg-[#EA4335] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                    disabled={isExporting}
+                    className="w-full bg-[#EA4335] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100"
                   >
                     <Mail className="w-4 h-4" />
                     Gmail
@@ -2129,7 +2184,8 @@ export default function App() {
 
                   <button 
                     onClick={() => handleShareBackup()}
-                    className="w-full bg-black/5 text-black/60 py-4 rounded-2xl font-bold text-xs uppercase flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                    disabled={isExporting}
+                    className="w-full bg-black/5 text-black/60 py-4 rounded-2xl font-bold text-xs uppercase flex items-center justify-center gap-2 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100"
                   >
                     <MoreHorizontal className="w-4 h-4" />
                     Outros
