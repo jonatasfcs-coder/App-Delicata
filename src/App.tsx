@@ -256,21 +256,47 @@ export default function App() {
   };
 
   const saveOrShareFile = async (file: File, blob: Blob, fileName: string) => {
-    // Try sharing first (best for mobile)
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    // 1. Try File System Access API (Desktop Chrome/Edge)
+    // This opens the native "Save As" dialog to pick a location
+    if ('showSaveFilePicker' in window) {
       try {
-        await navigator.share({
-          files: [file],
-          title: fileName,
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: fileName,
+          types: [{
+            description: 'Arquivo',
+            accept: { [file.type]: [`.${fileName.split('.').pop()}`] },
+          }],
         });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
         return true;
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') return true; // User cancelled
+        console.error("File System Access API failed, trying share:", error);
+      }
+    }
+
+    // 2. Try sharing (best for mobile)
+    // On Android/iOS, this opens the native share sheet which includes "Save to Files"
+    if (navigator.share) {
+      try {
+        // Check if file sharing is supported
+        const canShareFiles = navigator.canShare && navigator.canShare({ files: [file] });
+        if (canShareFiles) {
+          await navigator.share({
+            files: [file],
+            title: fileName,
+          });
+          return true;
+        }
       } catch (error) {
         if ((error as Error).name === 'AbortError') return true; // User cancelled
         console.error("Share failed, falling back to download:", error);
       }
     }
 
-    // Fallback to download
+    // 3. Fallback to direct download
     try {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
