@@ -257,6 +257,13 @@ export default function App() {
 
   const saveOrShareFile = async (file: File, blob: Blob, fileName: string) => {
     const isInIframe = window.self !== window.top;
+    
+    // Sanitize filename: remove accents, spaces and special characters
+    const sanitizedName = fileName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9.-]/gi, '_');
 
     // 1. Try File System Access API (Desktop Chrome/Edge)
     // This opens the native "Save As" dialog to pick a location
@@ -264,10 +271,10 @@ export default function App() {
     if (!isInIframe && 'showSaveFilePicker' in window) {
       try {
         const handle = await (window as any).showSaveFilePicker({
-          suggestedName: fileName,
+          suggestedName: sanitizedName,
           types: [{
             description: 'Arquivo',
-            accept: { [file.type]: [`.${fileName.split('.').pop()}`] },
+            accept: { [file.type]: [`.${sanitizedName.split('.').pop()}`] },
           }],
         });
         const writable = await handle.createWritable();
@@ -290,7 +297,8 @@ export default function App() {
         if (canShareFiles) {
           await navigator.share({
             files: [file],
-            title: fileName,
+            title: sanitizedName,
+            text: 'Relatório/Backup Delicata'
           });
           return true;
         }
@@ -308,16 +316,30 @@ export default function App() {
     try {
       if (isInIframe) {
         showToast('Salvando arquivo... Para recursos avançados, abra o app em uma nova aba.', 'info');
+      } else {
+        showToast('Iniciando download...', 'info');
       }
       
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = fileName;
+      link.download = sanitizedName;
+      
+      // For mobile compatibility, ensure the link is in the DOM
+      link.style.display = 'none';
       document.body.appendChild(link);
+      
+      // Trigger click immediately to maintain user activation context
       link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 100);
+      
+      // Cleanup after a short delay
+      setTimeout(() => {
+        if (document.body.contains(link)) {
+          document.body.removeChild(link);
+        }
+        URL.revokeObjectURL(url);
+      }, 1000);
+      
       return true;
     } catch (error) {
       console.error("Download failed:", error);
@@ -333,13 +355,6 @@ export default function App() {
       const dateStr = format(now, 'dd/MM/yyyy HH:mm');
       const fileName = `Backup_Delicata_${format(now, 'dd-MM-yyyy')}`;
       
-      // Save to IndexedDB for weekly backup
-      await db.backups.add({
-        date: format(now, 'yyyy-MM-dd'),
-        timestamp: now.getTime(),
-        content: data
-      });
-
       if (!isAuto) {
         const blob = new Blob([data], { type: 'application/json' });
         const file = new File([blob], `${fileName}.json`, { type: 'application/json' });
@@ -351,6 +366,13 @@ export default function App() {
           showToast('Erro ao gerar backup.', 'error');
         }
       }
+
+      // Save to IndexedDB for history - do this after file saving to preserve user activation
+      await db.backups.add({
+        date: format(now, 'yyyy-MM-dd'),
+        timestamp: now.getTime(),
+        content: data
+      });
 
       setLastBackupDate(dateStr);
       localStorage.setItem('delicata_last_backup', dateStr);
@@ -550,10 +572,15 @@ export default function App() {
       if (exportPeriod === 'MENSAL') {
         const date = setYear(setMonth(new Date(), exportMonth), exportYear);
         const days = getDaysInMonth(date);
+        const monthStart = startOfMonth(date);
+        const monthEnd = endOfMonth(date);
+        
+        // Filter once for the whole month to improve performance
+        const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
         
         for (let i = 1; i <= days; i++) {
           const currentDay = new Date(exportYear, exportMonth, i);
-          const daySales = sales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
+          const daySales = monthSales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
           
           const dinheiro = daySales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
           const pix = daySales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
@@ -577,12 +604,16 @@ export default function App() {
           totalGeral += total;
         }
       } else {
-        // Annual
+        // Annual - Filter once for the whole year
+        const yearStart = startOfYear(new Date(exportYear, 0, 1));
+        const yearEnd = endOfYear(new Date(exportYear, 11, 31));
+        const yearSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: yearStart, end: yearEnd }));
+
         for (let i = 0; i < 12; i++) {
           const currentMonth = new Date(exportYear, i, 1);
           const monthStart = startOfMonth(currentMonth);
           const monthEnd = endOfMonth(currentMonth);
-          const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
+          const monthSales = yearSales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
           
           const dinheiro = monthSales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
           const pix = monthSales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
@@ -783,10 +814,15 @@ export default function App() {
     if (exportPeriod === 'MENSAL') {
       const date = setYear(setMonth(new Date(), exportMonth), exportYear);
       const days = getDaysInMonth(date);
+      const monthStart = startOfMonth(date);
+      const monthEnd = endOfMonth(date);
+      
+      // Filter once for the whole month to improve performance
+      const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
       
       for (let i = 1; i <= days; i++) {
         const currentDay = new Date(exportYear, exportMonth, i);
-        const daySales = sales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
+        const daySales = monthSales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
         
         const dinheiro = daySales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
         const pix = daySales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
@@ -810,11 +846,16 @@ export default function App() {
         totalGeral += total;
       }
     } else {
+      // Annual - Filter once for the whole year
+      const yearStart = startOfYear(new Date(exportYear, 0, 1));
+      const yearEnd = endOfYear(new Date(exportYear, 11, 31));
+      const yearSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: yearStart, end: yearEnd }));
+
       for (let i = 0; i < 12; i++) {
         const currentMonth = new Date(exportYear, i, 1);
         const monthStart = startOfMonth(currentMonth);
         const monthEnd = endOfMonth(currentMonth);
-        const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
+        const monthSales = yearSales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
         
         const dinheiro = monthSales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
         const pix = monthSales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
