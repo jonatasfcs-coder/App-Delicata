@@ -28,7 +28,7 @@ import {
   FileText,
   FileSpreadsheet,
   X,
-  Fingerprint,
+  Eye,
   Lock,
   MessageCircle,
   Mail,
@@ -99,6 +99,7 @@ export default function App() {
   const [showRestoreMenu, setShowRestoreMenu] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<number | null>(null);
+  const [selectedSaleId, setSelectedSaleId] = useState<number | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [exportPeriod, setExportPeriod] = useState<'MENSAL' | 'ANUAL'>('MENSAL');
@@ -107,6 +108,14 @@ export default function App() {
   const [exportFormat, setExportFormat] = useState<'PDF' | 'Excel'>('PDF');
   const [showGDriveConfirm, setShowGDriveConfirm] = useState(false);
   const [showShareMenu, setShowShareMenu] = useState(false);
+  const [showReportPreview, setShowReportPreview] = useState(false);
+  const [reportPreviewData, setReportPreviewData] = useState<{
+    headers: string[],
+    rows: any[],
+    title: string,
+    period: string,
+    totals: any
+  } | null>(null);
 
   const handleLogin = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -116,38 +125,6 @@ export default function App() {
     } else {
       setAuthError(true);
       setTimeout(() => setAuthError(false), 2000);
-    }
-  };
-
-  const handleBiometricAuth = async () => {
-    if (!window.PublicKeyCredential) {
-      alert('Reconhecimento biométrico não suportado neste navegador.');
-      return;
-    }
-
-    try {
-      const available = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-      if (available) {
-        // Try to trigger a native prompt using a simple WebAuthn check if possible
-        // This is still a client-side simulation but feels more real
-        try {
-          const challenge = new Uint8Array(32);
-          window.crypto.getRandomValues(challenge);
-          
-          // We don't have a real credential ID, so we just check if the platform can verify
-          // In a real app, we'd use navigator.credentials.create first to register
-          // For this app, we'll just use the availability check as the "authentication"
-          // but we can add a small delay to simulate the process.
-          setIsAuthenticated(true);
-        } catch (e) {
-          console.error('WebAuthn error:', e);
-          setIsAuthenticated(true); // Fallback to simple check
-        }
-      } else {
-        alert('Nenhum autenticador biométrico disponível.');
-      }
-    } catch (error) {
-      console.error('Erro na biometria:', error);
     }
   };
 
@@ -171,6 +148,10 @@ export default function App() {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  useEffect(() => {
+    setSelectedSaleId(null);
+  }, [currentView]);
 
   const connectGDrive = async () => {
     try {
@@ -419,7 +400,10 @@ export default function App() {
   };
 
   const deleteSale = async (id?: number) => {
-    if (id) await db.sales.delete(id);
+    if (id) {
+      await db.sales.delete(id);
+      setSelectedSaleId(null);
+    }
   };
 
   const handleRestore = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -687,6 +671,106 @@ export default function App() {
     setShowExportOptions(false);
   };
 
+  const generateReportData = () => {
+    if (!sales) return null;
+    const rows: any[] = [];
+    const headers = exportPeriod === 'MENSAL' 
+      ? ["Data", "Dinheiro", "Pix", "Débito", "Crédito", "Total"]
+      : ["Mês", "Dinheiro", "Pix", "Débito", "Crédito", "Total"];
+    
+    let totalDinheiro = 0;
+    let totalPix = 0;
+    let totalDebito = 0;
+    let totalCredito = 0;
+    let totalGeral = 0;
+
+    if (exportPeriod === 'MENSAL') {
+      const date = setYear(setMonth(new Date(), exportMonth), exportYear);
+      const days = getDaysInMonth(date);
+      
+      for (let i = 1; i <= days; i++) {
+        const currentDay = new Date(exportYear, exportMonth, i);
+        const daySales = sales.filter(s => isSameDay(new Date(s.timestamp), currentDay));
+        
+        const dinheiro = daySales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
+        const pix = daySales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
+        const debito = daySales.filter(s => s.paymentType === 'debito').reduce((acc, s) => acc + s.totalValue, 0);
+        const credito = daySales.filter(s => s.paymentType === 'credito_vista' || s.paymentType === 'credito_parcelado').reduce((acc, s) => acc + s.totalValue, 0);
+        const total = dinheiro + pix + debito + credito;
+
+        rows.push([
+          format(currentDay, 'dd/MM/yyyy'),
+          dinheiro,
+          pix,
+          debito,
+          credito,
+          total
+        ]);
+
+        totalDinheiro += dinheiro;
+        totalPix += pix;
+        totalDebito += debito;
+        totalCredito += credito;
+        totalGeral += total;
+      }
+    } else {
+      for (let i = 0; i < 12; i++) {
+        const currentMonth = new Date(exportYear, i, 1);
+        const monthStart = startOfMonth(currentMonth);
+        const monthEnd = endOfMonth(currentMonth);
+        const monthSales = sales.filter(s => isWithinInterval(new Date(s.timestamp), { start: monthStart, end: monthEnd }));
+        
+        const dinheiro = monthSales.filter(s => s.paymentType === 'dinheiro').reduce((acc, s) => acc + s.totalValue, 0);
+        const pix = monthSales.filter(s => s.paymentType === 'pix').reduce((acc, s) => acc + s.totalValue, 0);
+        const debito = monthSales.filter(s => s.paymentType === 'debito').reduce((acc, s) => acc + s.totalValue, 0);
+        const credito = monthSales.filter(s => s.paymentType === 'credito_vista' || s.paymentType === 'credito_parcelado').reduce((acc, s) => acc + s.totalValue, 0);
+        const total = dinheiro + pix + debito + credito;
+
+        rows.push([
+          format(currentMonth, 'MMMM', { locale: ptBR }),
+          dinheiro,
+          pix,
+          debito,
+          credito,
+          total
+        ]);
+
+        totalDinheiro += dinheiro;
+        totalPix += pix;
+        totalDebito += debito;
+        totalCredito += credito;
+        totalGeral += total;
+      }
+    }
+
+    const periodText = exportPeriod === 'MENSAL' 
+      ? `${format(setMonth(new Date(), exportMonth), 'MMMM', { locale: ptBR })} ${exportYear}`
+      : `${exportYear}`;
+
+    return {
+      headers,
+      rows,
+      title: "Relatório de Vendas",
+      period: periodText,
+      totals: {
+        dinheiro: totalDinheiro,
+        pix: totalPix,
+        debito: totalDebito,
+        credito: totalCredito,
+        total: totalGeral
+      }
+    };
+  };
+
+  const handlePreviewReport = () => {
+    const data = generateReportData();
+    if (data) {
+      setReportPreviewData(data);
+      setShowReportPreview(true);
+      setShowExportOptions(false);
+    }
+  };
+
   const getViewTitle = () => {
     switch(currentView) {
       case 'sales': return 'Registro de Vendas';
@@ -706,7 +790,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FFFFFF] text-black font-sans pb-24">
+    <div className="min-h-screen bg-[#FDFCFB] text-black font-sans pb-24 pt-[env(safe-area-inset-top,0px)]">
       <AnimatePresence mode="wait">
         {!isAuthenticated ? (
           <motion.div
@@ -714,7 +798,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-[#FFFFFF] flex flex-col items-center justify-center p-6"
+            className="fixed inset-0 z-[100] bg-[#FDFCFB] flex flex-col items-center justify-center p-6"
           >
             <div className="w-full max-w-sm space-y-8 text-center">
               <div className="space-y-2">
@@ -751,56 +835,36 @@ export default function App() {
                   Entrar no Aplicativo
                 </button>
               </form>
-
-              <div className="pt-4">
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-black/5"></div>
-                  </div>
-                  <div className="relative flex justify-center text-[10px] uppercase font-bold tracking-widest">
-                    <span className="bg-[#FFFFFF] px-4 text-black/20">Ou use biometria</span>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleBiometricAuth}
-                  className="mt-6 w-16 h-16 bg-white border-2 border-black/5 rounded-2xl flex items-center justify-center mx-auto shadow-sm active:scale-90 transition-all hover:border-[#6B0D0D]/20"
-                >
-                  <Fingerprint className="w-8 h-8 text-[#6B0D0D]" />
-                </button>
-              </div>
             </div>
           </motion.div>
         ) : (
           <>
             {/* Header */}
-            <header className="bg-white border-b border-black/10 sticky top-0 z-10">
-        <div className="max-w-md mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-[#6B0D0D] rounded-full flex items-center justify-center shadow-lg">
-              <svg viewBox="0 0 24 24" className="w-6 h-6 text-white fill-current" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12,16C12,16 9,13 7,13C5,13 3,14 3,16C3,18 5,20 7,20C9,20 12,17 12,17M12,16C12,16 15,13 17,13C19,13 21,14 21,16C21,18 19,20 17,20C15,20 12,17 12,17M12,10C12,10 9,7 7,7C5,7 3,8 3,10C3,12 5,14 7,14C9,14 12,11 12,11M12,10C12,10 15,7 17,7C19,7 21,8 21,10C21,12 19,14 17,14C15,14 12,11 12,11" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-[#6B0D0D]">Delicata</h1>
-              <p className="text-[10px] uppercase tracking-widest text-black font-semibold">
-                {getViewTitle()}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="bg-[#6B0D0D]/10 p-2 rounded-full">
-              {getViewIcon()}
-            </div>
-            {currentView === 'reports' && (
-              <div className="relative">
-                <button 
-                  onClick={() => setShowExportMenu(!showExportMenu)}
-                  className="p-2 hover:bg-black/5 rounded-full transition-colors"
-                >
-                  <MoreVertical className="w-5 h-5 text-black/60" />
-                </button>
+            <header className="bg-white/80 backdrop-blur-md border-b border-black/5 sticky top-0 z-30 pt-[env(safe-area-inset-top,0px)]">
+              <div className="max-w-md mx-auto px-6 py-4 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[#6B0D0D] rounded-2xl flex items-center justify-center shadow-lg transform rotate-3">
+                    <svg viewBox="0 0 24 24" className="w-6 h-6 text-white fill-current" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12,16C12,16 9,13 7,13C5,13 3,14 3,16C3,18 5,20 7,20C9,20 12,17 12,17M12,16C12,16 15,13 17,13C19,13 21,14 21,16C21,18 19,20 17,20C15,20 12,17 12,17M12,10C12,10 9,7 7,7C5,7 3,8 3,10C3,12 5,14 7,14C9,14 12,11 12,11M12,10C12,10 15,7 17,7C19,7 21,8 21,10C21,12 19,14 17,14C15,14 12,11 12,11" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h1 className="text-xl font-black tracking-tight text-[#6B0D0D] uppercase">Delicata</h1>
+                    <p className="text-[9px] uppercase tracking-[0.2em] text-black/40 font-bold">
+                      {getViewTitle()}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {currentView === 'reports' && (
+                    <div className="relative">
+                      <motion.button 
+                        whileTap={{ scale: 0.9 }}
+                        onClick={() => setShowExportMenu(!showExportMenu)}
+                        className="p-2 bg-black/5 rounded-full transition-colors"
+                      >
+                        <MoreVertical className="w-5 h-5 text-black/60" />
+                      </motion.button>
                 
                 <AnimatePresence>
                   {showExportMenu && (
@@ -810,6 +874,9 @@ export default function App() {
                       exit={{ opacity: 0, scale: 0.95, y: -10 }}
                       className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-black/5 z-50 overflow-hidden"
                     >
+                      <div className="px-4 py-2 bg-black/5 border-b border-black/5">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-black/30">Geração Local</p>
+                      </div>
                       <button
                         onClick={() => {
                           setShowExportMenu(false);
@@ -1089,52 +1156,66 @@ export default function App() {
                     </div>
                   ) : (
                     sales.slice(0, 5).map((sale) => (
-                      <motion.div
-                        layout
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        key={sale.id}
-                        className="bg-white rounded-2xl p-4 flex items-center gap-4 shadow-sm border border-black/5 group"
-                      >
-                        <div className="w-12 h-12 rounded-xl bg-black/5 flex items-center justify-center shrink-0 relative">
-                          {sale.paymentType === 'dinheiro' ? (
-                            <DollarSign className="w-6 h-6 text-[#6B0D0D]" />
-                          ) : (
-                            <CreditCard className="w-6 h-6 text-black/40" />
+                        <motion.div
+                          layout
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          key={sale.id}
+                          onClick={() => setSelectedSaleId(selectedSaleId === sale.id ? null : (sale.id || null))}
+                          className={cn(
+                            "bg-white rounded-2xl p-4 flex items-center gap-4 shadow-sm border transition-all cursor-pointer",
+                            selectedSaleId === sale.id ? "border-[#6B0D0D] ring-1 ring-[#6B0D0D]/10" : "border-black/5"
                           )}
-                          {sale.paymentType === 'pix' && (
-                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-[#6B0D0D] rounded-full flex items-center justify-center border-2 border-white">
-                              <span className="text-[10px] font-bold text-white">P</span>
-                            </div>
-                          )}
-                        </div>
-                        
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-bold text-sm truncate text-black">
-                            {sale.customerName}
-                          </h4>
-                          <p className="text-[10px] text-black/40 font-medium">
-                            {sale.items.length === 1 
-                              ? sale.items[0].product 
-                              : `${sale.items[0].product} + ${sale.items.length - 1} itens`} • {PAYMENT_LABELS[sale.paymentType]}
-                            {sale.installments && ` (${sale.installments}x)`}
-                          </p>
-                        </div>
-
-                        <div className="text-right">
-                          <p className="font-bold text-sm text-black">R$ {sale.totalValue.toFixed(2)}</p>
-                          <p className="text-[10px] text-black/40">
-                            {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </p>
-                        </div>
-
-                        <button 
-                          onClick={() => setShowDeleteConfirm(sale.id || null)}
-                          className="opacity-0 group-hover:opacity-100 p-2 text-red-600 hover:bg-red-50 rounded-lg transition-all"
                         >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </motion.div>
+                          <div className="w-12 h-12 rounded-xl bg-black/5 flex items-center justify-center shrink-0 relative">
+                            {sale.paymentType === 'dinheiro' ? (
+                              <DollarSign className="w-6 h-6 text-[#6B0D0D]" />
+                            ) : (
+                              <CreditCard className="w-6 h-6 text-black/40" />
+                            )}
+                            {sale.paymentType === 'pix' && (
+                              <div className="absolute -top-1 -right-1 w-5 h-5 bg-[#6B0D0D] rounded-full flex items-center justify-center border-2 border-white">
+                                <span className="text-[10px] font-bold text-white">P</span>
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold text-sm truncate text-black">
+                              {sale.customerName}
+                            </h4>
+                            <p className="text-[10px] text-black/40 font-medium">
+                              {sale.items.length === 1 
+                                ? sale.items[0].product 
+                                : `${sale.items[0].product} + ${sale.items.length - 1} itens`} • {PAYMENT_LABELS[sale.paymentType]}
+                              {sale.installments && ` (${sale.installments}x)`}
+                            </p>
+                          </div>
+
+                          <div className="text-right">
+                            <p className="font-bold text-sm text-black">R$ {sale.totalValue.toFixed(2)}</p>
+                            <p className="text-[10px] text-black/40">
+                              {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+
+                          <AnimatePresence>
+                            {selectedSaleId === sale.id && (
+                              <motion.button 
+                                initial={{ opacity: 0, scale: 0.8 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowDeleteConfirm(sale.id || null);
+                                }}
+                                className="p-2 text-red-600 bg-red-50 rounded-lg transition-all"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
+                        </motion.div>
                     ))
                   )}
                 </div>
@@ -1194,9 +1275,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-6"
             >
-              <div className="px-2">
-                <h2 className="text-xl font-bold tracking-tight text-[#6B0D0D] mb-1">Total de Vendas</h2>
-                <div className="h-1 w-12 bg-[#6B0D0D] rounded-full"></div>
+              <div className="px-2 flex justify-between items-end mb-1">
+                <div>
+                  <h2 className="text-xl font-bold tracking-tight text-[#6B0D0D]">Total de Vendas</h2>
+                  <div className="h-1 w-12 bg-[#6B0D0D] rounded-full"></div>
+                </div>
+                <div className="flex items-center gap-1.5 bg-green-50 px-3 py-1.5 rounded-full border border-green-100">
+                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                  <span className="text-[9px] font-bold text-green-700 uppercase tracking-wider">Geração Local e Offline</span>
+                </div>
               </div>
 
               {/* Stats Grid */}
@@ -1406,7 +1493,7 @@ export default function App() {
                   </div>
                   <p className="text-[10px] text-black/60 leading-relaxed">
                     O backup exportará todas as suas vendas registradas para um arquivo JSON. 
-                    Você pode guardar este arquivo para segurança ou para importar em outro dispositivo futuramente.
+                    O arquivo será salvo automaticamente na pasta <strong>Downloads</strong> do seu telefone.
                   </p>
                   
                   {lastBackupDate && (
@@ -1684,12 +1771,106 @@ export default function App() {
                   </div>
                 </div>
 
-                <button
-                  onClick={handleExport}
-                  className="w-full bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform"
-                >
-                  Exportar Agora
-                </button>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={handlePreviewReport}
+                    className="flex-1 bg-black/5 text-black/60 py-4 rounded-2xl font-bold text-xs uppercase border border-black/10 active:scale-95 transition-transform flex items-center justify-center gap-2"
+                  >
+                    <Eye className="w-4 h-4" />
+                    Visualizar
+                  </button>
+                  <button
+                    onClick={handleExport}
+                    className="flex-1 bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Exportar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Report Preview Modal */}
+        <AnimatePresence>
+          {showReportPreview && reportPreviewData && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center px-4">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowReportPreview(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-md"
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="bg-white w-full max-w-lg h-[80vh] rounded-[32px] shadow-2xl relative z-10 flex flex-col overflow-hidden"
+              >
+                <div className="p-6 border-b border-black/5 flex justify-between items-center bg-[#6B0D0D] text-white">
+                  <div>
+                    <h3 className="font-bold uppercase tracking-widest text-xs opacity-70">Visualização do Relatório</h3>
+                    <p className="text-lg font-light">{reportPreviewData.period}</p>
+                  </div>
+                  <button onClick={() => setShowReportPreview(false)} className="p-2 bg-white/10 rounded-full">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-auto p-4">
+                  <div className="min-w-[500px]">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-black/5">
+                          {reportPreviewData.headers.map((h, i) => (
+                            <th key={i} className="p-3 text-[10px] uppercase font-bold text-black/40 border-b border-black/5">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reportPreviewData.rows.map((row, i) => (
+                          <tr key={i} className="border-b border-black/5 last:border-0">
+                            {row.map((cell, j) => (
+                              <td key={j} className={cn(
+                                "p-3 text-xs text-black",
+                                j > 0 ? "text-right font-mono" : "font-bold"
+                              )}>
+                                {typeof cell === 'number' ? `R$ ${cell.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : cell}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="sticky bottom-0 bg-white shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
+                        <tr className="bg-[#6B0D0D] text-white">
+                          <td className="p-3 text-xs font-bold uppercase">Totais</td>
+                          <td className="p-3 text-xs text-right font-mono">R$ {reportPreviewData.totals.dinheiro.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                          <td className="p-3 text-xs text-right font-mono">R$ {reportPreviewData.totals.pix.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                          <td className="p-3 text-xs text-right font-mono">R$ {reportPreviewData.totals.debito.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                          <td className="p-3 text-xs text-right font-mono">R$ {reportPreviewData.totals.credito.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                          <td className="p-3 text-xs text-right font-mono font-bold">R$ {reportPreviewData.totals.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="p-6 bg-black/5 border-t border-black/5">
+                  <button
+                    onClick={() => {
+                      setShowReportPreview(false);
+                      handleExport();
+                    }}
+                    className="w-full bg-[#6B0D0D] text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Baixar / Compartilhar ({exportFormat})
+                  </button>
+                </div>
               </motion.div>
             </div>
           )}
@@ -1820,37 +2001,52 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#6B0D0D] px-6 py-1.5 flex justify-around items-center max-w-md mx-auto z-20 shadow-[0_-10px_40px_rgba(107,13,13,0.3)] rounded-t-[32px]">
+      {/* Bottom Navigation (Material 3 Style) */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg px-4 pb-[calc(env(safe-area-inset-bottom,1rem)+4px)] pt-3 flex justify-around items-center max-w-md mx-auto z-30 border-t border-black/5 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] rounded-t-[32px]">
         <button 
           onClick={() => setCurrentView('sales')}
-          className={cn(
-            "p-1.5 rounded-2xl transition-all flex flex-col items-center gap-0.5",
-            currentView === 'sales' ? "text-white bg-white/10" : "text-white/40"
-          )}
+          className="relative flex flex-col items-center gap-1 group w-20"
         >
-          <Plus className="w-5 h-5" />
-          <span className="text-[8px] uppercase font-bold">Vendas</span>
+          <div className={cn(
+            "px-5 py-1 rounded-full transition-all duration-300 flex items-center justify-center",
+            currentView === 'sales' ? "bg-[#6B0D0D] text-white" : "text-black/40 group-active:bg-black/5"
+          )}>
+            <Plus className="w-5 h-5" />
+          </div>
+          <span className={cn(
+            "text-[10px] font-bold transition-colors",
+            currentView === 'sales' ? "text-[#6B0D0D]" : "text-black/40"
+          )}>Vendas</span>
         </button>
         <button 
           onClick={() => setCurrentView('reports')}
-          className={cn(
-            "p-1.5 rounded-2xl transition-all flex flex-col items-center gap-0.5",
-            currentView === 'reports' ? "text-white bg-white/10" : "text-white/40"
-          )}
+          className="relative flex flex-col items-center gap-1 group w-20"
         >
-          <BarChart3 className="w-5 h-5" />
-          <span className="text-[8px] uppercase font-bold">Relatórios</span>
+          <div className={cn(
+            "px-5 py-1 rounded-full transition-all duration-300 flex items-center justify-center",
+            currentView === 'reports' ? "bg-[#6B0D0D] text-white" : "text-black/40 group-active:bg-black/5"
+          )}>
+            <BarChart3 className="w-5 h-5" />
+          </div>
+          <span className={cn(
+            "text-[10px] font-bold transition-colors",
+            currentView === 'reports' ? "text-[#6B0D0D]" : "text-black/40"
+          )}>Relatórios</span>
         </button>
         <button 
           onClick={() => setCurrentView('settings')}
-          className={cn(
-            "p-1.5 rounded-2xl transition-all flex flex-col items-center gap-0.5",
-            currentView === 'settings' ? "text-white bg-white/10" : "text-white/40"
-          )}
+          className="relative flex flex-col items-center gap-1 group w-20"
         >
-          <Settings className="w-5 h-5" />
-          <span className="text-[8px] uppercase font-bold">Configurações</span>
+          <div className={cn(
+            "px-5 py-1 rounded-full transition-all duration-300 flex items-center justify-center",
+            currentView === 'settings' ? "bg-[#6B0D0D] text-white" : "text-black/40 group-active:bg-black/5"
+          )}>
+            <Settings className="w-5 h-5" />
+          </div>
+          <span className={cn(
+            "text-[10px] font-bold transition-colors",
+            currentView === 'settings' ? "text-[#6B0D0D]" : "text-black/40"
+          )}>Ajustes</span>
         </button>
       </nav>
           </>
@@ -1861,6 +2057,10 @@ export default function App() {
 }
 
 const styles = `
+  body {
+    overscroll-behavior: none;
+    background-color: #FDFCFB;
+  }
   @keyframes shake {
     0%, 100% { transform: translateX(0); }
     25% { transform: translateX(-4px); }

@@ -1,5 +1,5 @@
 {
   "name": "Delicata Vendas",
-  "description": "Sistema de registro de vendas local para a loja Delicata",
+  "description": "Sistema de registro de vendas local para a loja Delicata, otimizado para Android 12+. Geração de relatórios independente e offline.",
   "requestFramePermissions": []
 }
