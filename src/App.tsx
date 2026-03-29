@@ -256,9 +256,12 @@ export default function App() {
   };
 
   const saveOrShareFile = async (file: File, blob: Blob, fileName: string) => {
+    const isInIframe = window.self !== window.top;
+
     // 1. Try File System Access API (Desktop Chrome/Edge)
     // This opens the native "Save As" dialog to pick a location
-    if ('showSaveFilePicker' in window) {
+    // Skip if in iframe as it's blocked by browser policy
+    if (!isInIframe && 'showSaveFilePicker' in window) {
       try {
         const handle = await (window as any).showSaveFilePicker({
           suggestedName: fileName,
@@ -273,12 +276,13 @@ export default function App() {
         return true;
       } catch (error) {
         if ((error as Error).name === 'AbortError') return true; // User cancelled
-        console.error("File System Access API failed, trying share:", error);
+        console.warn("File System Access API failed, trying share:", error);
       }
     }
 
     // 2. Try sharing (best for mobile)
     // On Android/iOS, this opens the native share sheet which includes "Save to Files"
+    // Note: navigator.share often fails in cross-origin iframes
     if (navigator.share) {
       try {
         // Check if file sharing is supported
@@ -292,12 +296,20 @@ export default function App() {
         }
       } catch (error) {
         if ((error as Error).name === 'AbortError') return true; // User cancelled
-        console.error("Share failed, falling back to download:", error);
+        // Only log warning if not in iframe, as it's expected to fail in iframe
+        if (!isInIframe) {
+          console.warn("Share failed, falling back to download:", error);
+        }
       }
     }
 
     // 3. Fallback to direct download
+    // This is the most reliable method in an iframe context
     try {
+      if (isInIframe) {
+        showToast('Salvando arquivo... Para recursos avançados, abra o app em uma nova aba.', 'info');
+      }
+      
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
