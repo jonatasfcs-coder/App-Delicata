@@ -6,6 +6,7 @@
     touch-action: manipulation;
     overflow-x: hidden;
     height: 100%;
+    overscroll-behavior-y: contain;
   }
 
   body {
@@ -16,6 +17,7 @@
     height: 100%;
     position: fixed;
     width: 100%;
+    overscroll-behavior-y: contain;
   }
 
   /* Allow selection in inputs and textareas */

@@ -110,7 +110,7 @@ export default function App() {
   const [exportPeriod, setExportPeriod] = useState<'MENSAL' | 'ANUAL'>('MENSAL');
   const [exportMonth, setExportMonth] = useState(new Date().getMonth());
   const [exportYear, setExportYear] = useState(new Date().getFullYear());
-  const [exportFormat, setExportFormat] = useState<'PDF' | 'Excel'>('PDF');
+  const [exportFormat, setExportFormat] = useState<'PDF' | 'Excel' | 'CSV'>('PDF');
   const [showGDriveConfirm, setShowGDriveConfirm] = useState(false);
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [showReportPreview, setShowReportPreview] = useState(false);
@@ -246,6 +246,91 @@ export default function App() {
       setIsExporting(false);
     }
   };
+
+  const handleCopyBackupToClipboard = async () => {
+    try {
+      const data = JSON.stringify(sales, null, 2);
+      await navigator.clipboard.writeText(data);
+      showToast('Dados de backup copiados para a área de transferência!', 'success');
+    } catch (error) {
+      console.error("Copy backup error:", error);
+      showToast('Erro ao copiar dados.', 'error');
+    }
+  };
+
+  const handleShareBackupAsText = async () => {
+    try {
+      const data = JSON.stringify(sales, null, 2);
+      if (navigator.share) {
+        await navigator.share({
+          title: 'Backup Delicata',
+          text: data
+        });
+        showToast('Backup compartilhado como texto!', 'success');
+      } else {
+        await handleCopyBackupToClipboard();
+      }
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') return;
+      console.error("Share text backup error:", error);
+      showToast('Erro ao compartilhar texto.', 'error');
+    }
+  };
+
+  const handleRestoreData = async (jsonData: string) => {
+    try {
+      const data = JSON.parse(jsonData);
+      
+      // Basic validation
+      if (!Array.isArray(data)) {
+        throw new Error('Formato de backup inválido. O backup deve ser uma lista de vendas.');
+      }
+
+      // Confirm restoration
+      const confirmRestore = window.confirm(
+        `Atenção: Você está prestes a restaurar ${data.length} vendas. Isso substituirá os dados atuais se houver conflitos de ID. Deseja continuar?`
+      );
+
+      if (!confirmRestore) return;
+
+      setIsExporting(true);
+      
+      // Clear current sales and add new ones
+      // We use a transaction for safety
+      await db.transaction('rw', db.sales, async () => {
+        // Option A: Merge (keep current, add new)
+        // Option B: Replace (clear all, add new) - safer for full restore
+        await db.sales.clear();
+        await db.sales.bulkAdd(data);
+      });
+
+      showToast('Banco de dados restaurado com sucesso!', 'success');
+      // Reload page to refresh all queries
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (error) {
+      console.error("Restore error:", error);
+      showToast(error instanceof Error ? error.message : 'Erro ao restaurar dados.', 'error');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleRestoreFromFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const content = e.target?.result as string;
+      await handleRestoreData(content);
+    };
+    reader.readAsText(file);
+    // Reset input
+    event.target.value = '';
+  };
+
+  const [showRestoreTextModal, setShowRestoreTextModal] = useState(false);
+  const [restoreText, setRestoreText] = useState('');
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -748,45 +833,79 @@ export default function App() {
         } else {
           showToast('Erro ao gerar PDF.', 'error');
         }
-      } else {
+      } else if (exportFormat === 'Excel') {
         // Excel Export with similar structure
-        const titleRow = ["DELICATA"];
-        const subtitleRow = ["Relatório de Vendas"];
-        const periodRow = [periodText];
-        const emptyRow = [""];
+        try {
+          const titleRow = ["DELICATA"];
+          const subtitleRow = ["Relatório de Vendas"];
+          const periodRow = [periodText];
+          const emptyRow = [""];
+          
+          const ws = XLSX.utils.aoa_to_sheet([
+            titleRow,
+            subtitleRow,
+            periodRow,
+            emptyRow,
+            headers,
+            ...data
+          ]);
+
+          // Adjust column widths
+          const wscols = [
+            { wch: 15 }, // Data/Mês
+            { wch: 12 }, // Dinheiro
+            { wch: 12 }, // Pix
+            { wch: 12 }, // Débito
+            { wch: 12 }, // Crédito
+            { wch: 15 }, // Total do Dia / Mensal
+          ];
+          ws['!cols'] = wscols;
+
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, "Relatório");
+          
+          const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+          const excelBlob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const excelFile = new File([excelBlob], `${fileName}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+          const success = await saveOrShareFile(excelFile, excelBlob, `${fileName}.xlsx`);
+          if (success) {
+            showToast('Relatório Excel gerado!', 'success');
+          } else {
+            throw new Error("Save failed");
+          }
+        } catch (error) {
+          console.warn("Excel failed, trying CSV fallback:", error);
+          // CSV Fallback
+          const csvContent = [
+            headers.join(','),
+            ...data.map(row => row.join(','))
+          ].join('\n');
+          
+          const csvBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+          const csvFile = new File([csvBlob], `${fileName}.csv`, { type: 'text/csv' });
+          
+          const success = await saveOrShareFile(csvFile, csvBlob, `${fileName}.csv`);
+          if (success) {
+            showToast('Relatório gerado como CSV (Excel alternativo)!', 'success');
+          } else {
+            showToast('Erro ao gerar relatório.', 'error');
+          }
+        }
+      } else if (exportFormat === 'CSV') {
+        const csvContent = [
+          headers.join(','),
+          ...data.map(row => row.join(','))
+        ].join('\n');
         
-        const ws = XLSX.utils.aoa_to_sheet([
-          titleRow,
-          subtitleRow,
-          periodRow,
-          emptyRow,
-          headers,
-          ...data
-        ]);
-
-        // Adjust column widths
-        const wscols = [
-          { wch: 15 }, // Data/Mês
-          { wch: 12 }, // Dinheiro
-          { wch: 12 }, // Pix
-          { wch: 12 }, // Débito
-          { wch: 12 }, // Crédito
-          { wch: 15 }, // Total do Dia / Mensal
-        ];
-        ws['!cols'] = wscols;
-
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Relatório");
+        const csvBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const csvFile = new File([csvBlob], `${fileName}.csv`, { type: 'text/csv' });
         
-        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-        const excelBlob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const excelFile = new File([excelBlob], `${fileName}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-
-        const success = await saveOrShareFile(excelFile, excelBlob, `${fileName}.xlsx`);
+        const success = await saveOrShareFile(csvFile, csvBlob, `${fileName}.csv`);
         if (success) {
-          showToast('Relatório Excel gerado!', 'success');
+          showToast('Relatório CSV gerado!', 'success');
         } else {
-          showToast('Erro ao gerar Excel.', 'error');
+          showToast('Erro ao gerar CSV.', 'error');
         }
       }
     } catch (error) {
@@ -1077,204 +1196,223 @@ export default function App() {
                 </motion.button>
               )}
 
-              {/* Add Sale Form */}
+              {/* Add Sale Modal */}
               <AnimatePresence>
                 {isAdding && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className="bg-white rounded-3xl p-6 shadow-xl border border-black/10 space-y-4"
-                  >
-                    <div className="flex justify-between items-center mb-2">
-                      <h2 className="font-bold text-lg text-[#6B0D0D]">Nova Venda</h2>
-                      <button onClick={handleCancelSale} className="text-black/40 p-1">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <div className="space-y-4">
-                      {/* Customer Name Input */}
-                      <div className="space-y-1">
-                        <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Nome do Cliente</label>
-                        <input
-                          type="text"
-                          placeholder="Ex: Cliente Delicata"
-                          value={customerName}
-                          onChange={(e) => setCustomerName(e.target.value)}
-                          onFocus={(e) => e.target.select()}
-                          className="w-full bg-black/5 border border-black/10 rounded-xl py-3 px-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black placeholder:text-black/40"
-                        />
+                  <div className="fixed inset-0 z-[90] flex items-center justify-center px-4 py-8">
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={handleCancelSale}
+                      className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                    />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                      className="bg-white w-full max-w-md rounded-[32px] shadow-2xl relative z-10 flex flex-col max-h-full overflow-hidden"
+                    >
+                      <div className="p-6 border-b border-black/5 flex justify-between items-center bg-[#6B0D0D] text-white shrink-0">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center">
+                            <Plus className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h3 className="font-bold uppercase tracking-widest text-[10px] opacity-70">Nova Venda</h3>
+                            <p className="text-sm font-bold">Registro de Pedido</p>
+                          </div>
+                        </div>
+                        <button onClick={handleCancelSale} className="p-2 bg-white/10 rounded-full active:scale-90 transition-transform">
+                          <X className="w-5 h-5" />
+                        </button>
                       </div>
 
-                      {/* Item Input Section */}
-                      <div className="bg-black/5 p-4 rounded-2xl space-y-4">
-                        <div className="space-y-1">
-                          <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Produto</label>
-                          <div className="relative">
-                            <Package className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-black/40" />
+                      <div className="flex-1 overflow-auto p-6 space-y-6">
+                        <div className="space-y-4">
+                          {/* Customer Name Input */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Nome do Cliente</label>
                             <input
                               type="text"
-                              placeholder="Ex: Vestido Floral"
-                              value={productType}
-                              onChange={(e) => setProductType(e.target.value)}
+                              placeholder="Ex: Cliente Delicata"
+                              value={customerName}
+                              onChange={(e) => setCustomerName(e.target.value)}
                               onFocus={(e) => e.target.select()}
-                              className="w-full bg-white border border-black/10 rounded-xl py-3 pl-10 pr-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black placeholder:text-black/40"
+                              className="w-full bg-black/5 border border-black/10 rounded-xl py-3 px-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black placeholder:text-black/40"
                             />
                           </div>
-                        </div>
 
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-1">
-                            <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Qtd</label>
-                            <input
-                              type="number"
-                              min="1"
-                              value={quantity}
-                              onChange={(e) => setQuantity(Number(e.target.value))}
-                              onFocus={(e) => e.target.select()}
-                              className="w-full bg-white border border-black/10 rounded-xl py-3 px-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-[10px] uppercase font-bold text-black/60 ml-1">V. Unitário</label>
-                            <div className="relative">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40 text-sm">R$</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={unitPrice}
-                                onChange={(e) => setUnitPrice(Number(e.target.value))}
-                                onFocus={(e) => e.target.select()}
-                                className="w-full bg-white border border-black/10 rounded-xl py-3 pl-9 pr-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
-                              />
+                          {/* Item Input Section */}
+                          <div className="bg-black/5 p-4 rounded-2xl space-y-4">
+                            <div className="space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Produto</label>
+                              <div className="relative">
+                                <Package className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-black/40" />
+                                <input
+                                  type="text"
+                                  placeholder="Ex: Vestido Floral"
+                                  value={productType}
+                                  onChange={(e) => setProductType(e.target.value)}
+                                  onFocus={(e) => e.target.select()}
+                                  className="w-full bg-white border border-black/10 rounded-xl py-3 pl-10 pr-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black placeholder:text-black/40"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Qtd</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={quantity}
+                                  onChange={(e) => setQuantity(Number(e.target.value))}
+                                  onFocus={(e) => e.target.select()}
+                                  className="w-full bg-white border border-black/10 rounded-xl py-3 px-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[10px] uppercase font-bold text-black/60 ml-1">V. Unitário</label>
+                                <div className="relative">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40 text-sm">R$</span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={unitPrice}
+                                    onChange={(e) => setUnitPrice(Number(e.target.value))}
+                                    onFocus={(e) => e.target.select()}
+                                    className="w-full bg-white border border-black/10 rounded-xl py-3 pl-9 pr-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex justify-between items-center pt-2">
+                              <div className="text-[10px] uppercase font-bold text-black/40">
+                                Subtotal: <span className="text-black">R$ {currentItemSubtotal.toFixed(2)}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleAddItem}
+                                disabled={!productType || quantity <= 0 || unitPrice <= 0}
+                                className="bg-[#6B0D0D] text-white text-[10px] font-bold uppercase px-4 py-2 rounded-xl disabled:opacity-50"
+                              >
+                                Inserir Produto
+                              </button>
                             </div>
                           </div>
-                        </div>
 
-                        <div className="flex justify-between items-center pt-2">
-                          <div className="text-[10px] uppercase font-bold text-black/40">
-                            Subtotal: <span className="text-black">R$ {currentItemSubtotal.toFixed(2)}</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleAddItem}
-                            disabled={!productType || quantity <= 0 || unitPrice <= 0}
-                            className="bg-[#6B0D0D] text-white text-[10px] font-bold uppercase px-4 py-2 rounded-xl disabled:opacity-50"
-                          >
-                            Inserir Produto
-                          </button>
+                          {/* Items List */}
+                          {currentItems.length > 0 && (
+                            <div className="space-y-2">
+                              <p className="text-[10px] uppercase font-bold text-black/40 ml-1">Itens da Venda</p>
+                              {currentItems.map((item, index) => (
+                                <div key={index} className="flex items-center justify-between bg-black/5 p-3 rounded-xl">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold truncate">{item.product}</p>
+                                    <p className="text-[10px] text-black/40">{item.quantity}x R$ {item.unitPrice.toFixed(2)}</p>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <span className="text-xs font-bold">R$ {item.subtotal.toFixed(2)}</span>
+                                    <button onClick={() => removeItem(index)} className="text-red-500 p-1 active:scale-90 transition-transform">
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <form onSubmit={handleSubmit} className="space-y-6">
+                            <div className="space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Desconto</label>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40 text-sm">R$</span>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={discount || ''}
+                                  onChange={(e) => setDiscount(Number(e.target.value))}
+                                  onFocus={(e) => e.target.select()}
+                                  className="w-full bg-white border border-black/10 rounded-xl py-3 pl-9 pr-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
+                                  placeholder="0,00"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="bg-[#6B0D0D] rounded-2xl p-4 flex justify-between items-center text-white shadow-xl">
+                              <div>
+                                <p className="text-[10px] uppercase opacity-70 font-bold">Total da Venda</p>
+                                <p className="text-xl font-light tracking-tight">
+                                  R$ {saleTotalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                </p>
+                              </div>
+                              <div className="bg-white/10 p-2 rounded-xl">
+                                <DollarSign className="w-5 h-5 text-white/70" />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Pagamento</label>
+                              <div className="grid grid-cols-2 gap-2">
+                                {(Object.keys(PAYMENT_LABELS) as PaymentType[]).map((type) => (
+                                  <button
+                                    key={type}
+                                    type="button"
+                                    onClick={() => setPaymentType(type)}
+                                    className={cn(
+                                      "py-2 px-3 rounded-xl text-[10px] font-bold border transition-all uppercase tracking-tighter",
+                                      paymentType === type 
+                                        ? "bg-[#6B0D0D] border-[#6B0D0D] text-white shadow-sm" 
+                                        : "bg-white border-black/10 text-black/40 hover:border-black/20"
+                                    )}
+                                  >
+                                    {PAYMENT_LABELS[type]}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {paymentType === 'credito_parcelado' && (
+                              <div className="space-y-1">
+                                <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Número de Parcelas</label>
+                                <input
+                                  required
+                                  type="number"
+                                  min="1"
+                                  max="24"
+                                  value={installments}
+                                  onChange={(e) => setInstallments(Number(e.target.value))}
+                                  onFocus={(e) => e.target.select()}
+                                  className="w-full bg-black/5 border border-black/10 rounded-xl py-3 px-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
+                                />
+                              </div>
+                            )}
+
+                            <div className="flex flex-col gap-3 pt-2">
+                              <button
+                                type="submit"
+                                disabled={currentItems.length === 0}
+                                className="w-full bg-[#6B0D0D] text-white p-4 rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all text-xs font-bold uppercase shadow-lg disabled:opacity-50 disabled:hover:scale-100"
+                              >
+                                Concluir Venda
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleCancelSale}
+                                className="w-full bg-black/5 text-black/60 p-4 rounded-2xl hover:bg-black/10 transition-colors text-xs font-bold uppercase"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </form>
                         </div>
                       </div>
-
-                      {/* Items List */}
-                      {currentItems.length > 0 && (
-                        <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-                          <p className="text-[10px] uppercase font-bold text-black/40 ml-1">Itens da Venda</p>
-                          {currentItems.map((item, index) => (
-                            <div key={index} className="flex items-center justify-between bg-black/5 p-3 rounded-xl">
-                              <div className="min-w-0 flex-1">
-                                <p className="text-xs font-bold truncate">{item.product}</p>
-                                <p className="text-[10px] text-black/40">{item.quantity}x R$ {item.unitPrice.toFixed(2)}</p>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <span className="text-xs font-bold">R$ {item.subtotal.toFixed(2)}</span>
-                                <button onClick={() => removeItem(index)} className="text-red-500">
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      <form onSubmit={handleSubmit} className="space-y-6">
-                        <div className="space-y-1">
-                          <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Desconto</label>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40 text-sm">R$</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={discount || ''}
-                              onChange={(e) => setDiscount(Number(e.target.value))}
-                              onFocus={(e) => e.target.select()}
-                              className="w-full bg-white border border-black/10 rounded-xl py-3 pl-9 pr-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
-                              placeholder="0,00"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="bg-[#6B0D0D] rounded-2xl p-4 flex justify-between items-center text-white shadow-xl">
-                          <div>
-                            <p className="text-[10px] uppercase opacity-70 font-bold">Total da Venda</p>
-                            <p className="text-xl font-light tracking-tight">
-                              R$ {saleTotalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                            </p>
-                          </div>
-                          <div className="bg-white/10 p-2 rounded-xl">
-                            <DollarSign className="w-5 h-5 text-white/70" />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Pagamento</label>
-                          <div className="grid grid-cols-2 gap-2">
-                            {(Object.keys(PAYMENT_LABELS) as PaymentType[]).map((type) => (
-                              <button
-                                key={type}
-                                type="button"
-                                onClick={() => setPaymentType(type)}
-                                className={cn(
-                                  "py-2 px-3 rounded-xl text-[10px] font-bold border transition-all uppercase tracking-tighter",
-                                  paymentType === type 
-                                    ? "bg-[#6B0D0D] border-[#6B0D0D] text-white shadow-sm" 
-                                    : "bg-white border-black/10 text-black/40 hover:border-black/20"
-                                )}
-                              >
-                                {PAYMENT_LABELS[type]}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        {paymentType === 'credito_parcelado' && (
-                          <div className="space-y-1">
-                            <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Número de Parcelas</label>
-                            <input
-                              required
-                              type="number"
-                              min="1"
-                              max="24"
-                              value={installments}
-                              onChange={(e) => setInstallments(Number(e.target.value))}
-                              onFocus={(e) => e.target.select()}
-                              className="w-full bg-black/5 border border-black/10 rounded-xl py-3 px-4 focus:ring-2 focus:ring-[#6B0D0D] transition-all outline-none text-black"
-                            />
-                          </div>
-                        )}
-
-                        <div className="flex flex-col gap-3 pt-2">
-                          <button
-                            type="submit"
-                            disabled={currentItems.length === 0}
-                            className="w-full bg-[#6B0D0D] text-white p-4 rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all text-xs font-bold uppercase shadow-lg disabled:opacity-50 disabled:hover:scale-100"
-                          >
-                            Concluir Venda
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleCancelSale}
-                            className="w-full bg-black/5 text-black/60 p-4 rounded-2xl hover:bg-black/10 transition-colors text-xs font-bold uppercase"
-                          >
-                            Cancelar
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  </motion.div>
+                    </motion.div>
+                  </div>
                 )}
               </AnimatePresence>
 
@@ -1658,6 +1796,65 @@ export default function App() {
                 <div className="pt-4 border-t border-black/5 space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-amber-50 rounded-lg flex items-center justify-center">
+                        <AlertCircle className="w-4 h-4 text-amber-600" />
+                      </div>
+                      <span className="text-sm font-bold text-black">Backup de Emergência</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={handleCopyBackupToClipboard}
+                        className="bg-amber-100 text-amber-700 text-[10px] font-bold uppercase tracking-widest px-3 py-2 rounded-xl active:scale-95 transition-transform"
+                      >
+                        Copiar
+                      </button>
+                      <button 
+                        onClick={handleShareBackupAsText}
+                        className="bg-amber-600 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-2 rounded-xl shadow-md active:scale-95 transition-transform"
+                      >
+                        Texto
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-black/60 leading-relaxed">
+                    Se o backup em arquivo falhar, use estas opções para copiar os dados como texto ou compartilhar diretamente.
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-black/5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-green-50 rounded-lg flex items-center justify-center">
+                        <Database className="w-4 h-4 text-green-600" />
+                      </div>
+                      <span className="text-sm font-bold text-black">Restaurar Dados</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <label className="bg-green-600 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-2 rounded-xl shadow-md active:scale-95 transition-transform cursor-pointer">
+                        Arquivo
+                        <input 
+                          type="file" 
+                          accept=".json" 
+                          className="hidden" 
+                          onChange={handleRestoreFromFile}
+                        />
+                      </label>
+                      <button 
+                        onClick={() => setShowRestoreTextModal(true)}
+                        className="bg-green-100 text-green-700 text-[10px] font-bold uppercase tracking-widest px-3 py-2 rounded-xl active:scale-95 transition-transform"
+                      >
+                        Texto
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-black/60 leading-relaxed">
+                    Recupere suas vendas a partir de um arquivo de backup (.json) ou colando o texto copiado anteriormente.
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-black/5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
                       <div className="w-8 h-8 bg-black/5 rounded-lg flex items-center justify-center">
                         <ArrowRightLeft className="w-4 h-4 text-black/60" />
                       </div>
@@ -1869,16 +2066,17 @@ export default function App() {
 
                   <div className="space-y-1">
                     <label className="text-[10px] uppercase font-bold text-black/60 ml-1">Formato</label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       {[
                         { id: 'PDF', icon: <FileText className="w-4 h-4" /> },
-                        { id: 'Excel', icon: <FileSpreadsheet className="w-4 h-4" /> }
+                        { id: 'Excel', icon: <FileSpreadsheet className="w-4 h-4" /> },
+                        { id: 'CSV', icon: <FileText className="w-4 h-4" /> }
                       ].map((f) => (
                         <button
                           key={f.id}
                           onClick={() => setExportFormat(f.id as any)}
                           className={cn(
-                            "py-3 rounded-xl text-[10px] font-bold border transition-all uppercase flex items-center justify-center gap-2",
+                            "py-3 rounded-xl text-[10px] font-bold border transition-all uppercase flex flex-col items-center justify-center gap-1",
                             exportFormat === f.id 
                               ? "bg-[#6B0D0D] border-[#6B0D0D] text-white" 
                               : "bg-white border-black/10 text-black/40"
@@ -1913,6 +2111,57 @@ export default function App() {
                     {isExporting ? 'Exportando...' : 'Exportar'}
                   </button>
                 </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Restore Text Modal */}
+        <AnimatePresence>
+          {showRestoreTextModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center px-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowRestoreTextModal(false)}
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl relative z-10 space-y-4"
+              >
+                <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-green-600 uppercase tracking-widest text-xs">Restaurar via Texto</h3>
+                  <button onClick={() => setShowRestoreTextModal(false)} className="text-black/40">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <p className="text-[10px] text-black/60 leading-relaxed">
+                  Cole abaixo o conteúdo do backup (texto JSON) que você copiou anteriormente.
+                </p>
+
+                <textarea
+                  value={restoreText}
+                  onChange={(e) => setRestoreText(e.target.value)}
+                  placeholder='Ex: [{"id": 1, "customerName": "..."}]'
+                  className="w-full h-40 bg-black/5 border border-black/10 rounded-2xl p-4 text-[10px] font-mono focus:ring-2 focus:ring-green-500 outline-none resize-none"
+                />
+
+                <button
+                  onClick={() => {
+                    handleRestoreData(restoreText);
+                    setShowRestoreTextModal(false);
+                    setRestoreText('');
+                  }}
+                  disabled={!restoreText.trim()}
+                  className="w-full bg-green-600 text-white py-4 rounded-2xl font-bold text-xs uppercase shadow-lg active:scale-95 transition-transform disabled:opacity-50"
+                >
+                  Confirmar Restauração
+                </button>
               </motion.div>
             </div>
           )}
